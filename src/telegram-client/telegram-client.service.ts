@@ -10,6 +10,9 @@ import { StringSession } from 'telegram/sessions';
 import { NewMessage } from 'telegram/events';
 import { NewMessageEvent } from 'telegram/events/NewMessage';
 import { BotService } from 'src/bot/bot.service';
+import { InjectModel } from '@nestjs/mongoose';
+import { Clone } from 'src/database/schemas/clone.schema';
+import { Model } from 'mongoose';
 // import { Api } from 'telegram';
 
 @Injectable()
@@ -23,6 +26,7 @@ export class TelegramClientService implements OnModuleInit {
   constructor(
     @Inject(forwardRef(() => BotService))
     private botService: BotService,
+    @InjectModel(Clone.name) private readonly cloneModel: Model<Clone>,
   ) {}
 
   async onModuleInit() {
@@ -79,65 +83,71 @@ export class TelegramClientService implements OnModuleInit {
       console.log(msg.chatId.toString());
 
       console.log(process.env.CHANNEL_ID);
+      const cloneChannels = await this.cloneModel
+        .find({ targetChannelId: msg.chatId.toString() })
+        .exec();
 
-      // Filter channel messages, avoid duplicates, and allow the target channel
-      if (
-        msg.isChannel &&
-        msg.id !== this.lastMessageId &&
-        msg.chatId?.toString() !== process.env.CHANNEL_ID
-      ) {
-        this.logger.log(
-          `New channel post: ChatID=${msg.chatId}, MessageID=${msg.id}`,
-        );
-        if (msg.media) {
-          // download as Buffer
-          const buffer = await this.client.downloadMedia(msg.media);
-          console.log('bufferrrr :', buffer);
-          if (buffer) {
-            console.log('hereee');
-            if (msg.media?.className === 'MessageMediaPhoto') {
-              return await this.clonerBot.sendPhoto(
-                process.env.CHANNEL_ID,
-                Buffer.from(buffer),
-                { caption: msg.message, parse_mode: 'HTML' },
-              );
-            } else if (
-              msg.media?.className === 'MessageMediaDocument' &&
-              msg.media?.video
-            ) {
-              return await this.clonerBot.sendVideo(
-                process.env.CHANNEL_ID,
-                Buffer.from(buffer),
-                { caption: msg.message, parse_mode: 'HTML' },
-              );
-            } else if (
-              msg.media?.className === 'MessageMediaDocument' &&
-              !msg.media?.video &&
-              !msg.media?.voice
-            ) {
-              return await this.clonerBot.sendAnimation(
-                process.env.CHANNEL_ID,
-                Buffer.from(buffer),
-                { caption: msg.message, parse_mode: 'HTML' },
-              );
-            }
-          } else {
-            // plain text
-            return await this.clonerBot.sendMessage(
-              process.env.CHANNEL_ID,
-              msg.message,
+      if (cloneChannels.length) {
+        for (const clone of cloneChannels) {
+          const channelId = clone.channelId;
+          const targetChannelId = clone.targetChannelId;
+
+          // Filter channel messages, avoid duplicates, and allow the target channel
+          if (
+            msg.isChannel &&
+            msg.id !== this.lastMessageId &&
+            msg.chatId?.toString() === targetChannelId &&
+            msg.chatId?.toString() !== channelId
+          ) {
+            this.logger.log(
+              `New channel post: ChatID=${msg.chatId}, MessageID=${msg.id}`,
             );
+            if (msg.media) {
+              // download as Buffer
+              const buffer = await this.client.downloadMedia(msg.media);
+              //   console.log('bufferrrr :', buffer);
+              if (buffer) {
+                console.log('hereee');
+                if (msg.media?.className === 'MessageMediaPhoto') {
+                  return await this.clonerBot.sendPhoto(
+                    channelId,
+                    Buffer.from(buffer),
+                    { caption: msg.message, parse_mode: 'HTML' },
+                  );
+                } else if (
+                  msg.media?.className === 'MessageMediaDocument' &&
+                  msg.media?.video
+                ) {
+                  return await this.clonerBot.sendVideo(
+                    channelId,
+                    Buffer.from(buffer),
+                    { caption: msg.message, parse_mode: 'HTML' },
+                  );
+                } else if (
+                  msg.media?.className === 'MessageMediaDocument' &&
+                  !msg.media?.video &&
+                  !msg.media?.voice
+                ) {
+                  return await this.clonerBot.sendAnimation(
+                    channelId,
+                    Buffer.from(buffer),
+                    { caption: msg.message, parse_mode: 'HTML' },
+                  );
+                }
+              } else {
+                // plain text
+                return await this.clonerBot.sendMessage(channelId, msg.message);
+              }
+            } else {
+              // plain text
+              return await this.clonerBot.sendMessage(channelId, msg.message, {
+                parse_mode: 'HTML',
+              });
+            }
           }
-        } else {
-          // plain text
-          return await this.clonerBot.sendMessage(
-            process.env.CHANNEL_ID,
-            msg.message,
-            {
-              parse_mode: 'HTML',
-            },
-          );
         }
+      } else {
+        console.log('This channel is NOT being cloned.');
       }
     } catch (error) {
       console.log(error);
