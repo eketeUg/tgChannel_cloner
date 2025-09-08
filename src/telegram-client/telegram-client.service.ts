@@ -82,7 +82,6 @@ export class TelegramClientService implements OnModuleInit {
       console.log(msg.id);
       console.log(msg.chatId.toString());
 
-      console.log(process.env.CHANNEL_ID);
       const cloneChannels = await this.cloneModel
         .find({ targetChannelId: msg.chatId.toString() })
         .exec();
