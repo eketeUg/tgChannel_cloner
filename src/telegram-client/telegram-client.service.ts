@@ -1,5 +1,11 @@
-import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
-import { TelegramClient } from 'telegram';
+import {
+  Injectable,
+  OnModuleInit,
+  Logger,
+  forwardRef,
+  Inject,
+} from '@nestjs/common';
+import { Api, TelegramClient } from 'telegram';
 import { StringSession } from 'telegram/sessions';
 import { NewMessage } from 'telegram/events';
 import { NewMessageEvent } from 'telegram/events/NewMessage';
@@ -14,7 +20,10 @@ export class TelegramClientService implements OnModuleInit {
   private logger = new Logger(TelegramClientService.name);
   private clonerBot = this.botService.clonerBot;
 
-  constructor(private readonly botService: BotService) {}
+  constructor(
+    @Inject(forwardRef(() => BotService))
+    private botService: BotService,
+  ) {}
 
   async onModuleInit() {
     const apiId = parseInt(process.env.TG_API_ID, 10);
@@ -132,6 +141,136 @@ export class TelegramClientService implements OnModuleInit {
       }
     } catch (error) {
       console.log(error);
+    }
+  }
+
+  async getChat_or_Channel_Id(
+    username: string,
+  ): Promise<{ mtprotoId: string; botApiId: string }> {
+    try {
+      const result = await this.client.invoke(
+        new Api.contacts.ResolveUsername({
+          username: username.replace('@', ''), // strip @ if included
+        }),
+      );
+
+      if (result.chats.length > 0) {
+        const channel: any = result.chats[0];
+        const mtprotoId = channel.id.toString();
+        const botApiId = `-100${channel.id.toString()}`;
+
+        this.logger.log(
+          `Resolved ${username} → MTProto ID: ${mtprotoId}, Bot API chat_id: ${botApiId}`,
+        );
+
+        return { mtprotoId, botApiId };
+      } else {
+        throw new Error(`No channel found for username ${username}`);
+      }
+    } catch (error) {
+      this.logger.error(`Failed to resolve ${username}`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Join a public channel by username
+   */
+  async joinChannelByUsername(username: string) {
+    try {
+      const resolved = await this.client.invoke(
+        new Api.contacts.ResolveUsername({
+          username: username.replace('@', ''),
+        }),
+      );
+
+      if (!resolved.chats.length) {
+        throw new Error(`Channel ${username} not found`);
+      }
+
+      const channel = resolved.chats[0];
+
+      // Check if already joined (for Channel type)
+      if ('left' in channel && channel.left === false) {
+        this.logger.log(`Already a member of ${username}`);
+        return channel;
+      }
+
+      // Try joining
+      const result = await this.client.invoke(
+        new Api.channels.JoinChannel({
+          channel: channel,
+        }),
+      );
+
+      this.logger.log(`Joined channel: ${username}`);
+      return result;
+    } catch (error: any) {
+      if (error.errorMessage === 'USER_ALREADY_PARTICIPANT') {
+        this.logger.warn(`Already joined channel ${username}`);
+        return { status: 'already_joined' };
+      }
+      this.logger.error(`Failed to join channel ${username}`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Join a private channel via invite link
+   */
+  async joinChannelByInviteLink(inviteLink: string) {
+    try {
+      const hash = inviteLink.split('/').pop();
+
+      const result = await this.client.invoke(
+        new Api.messages.ImportChatInvite({ hash }),
+      );
+
+      this.logger.log(`Joined channel with invite: ${inviteLink}`);
+      return result;
+    } catch (error: any) {
+      if (error.errorMessage === 'USER_ALREADY_PARTICIPANT') {
+        this.logger.warn(`Already joined channel via invite ${inviteLink}`);
+        return { status: 'already_joined' };
+      }
+      if (error.errorMessage === 'INVITE_HASH_EXPIRED') {
+        this.logger.warn(`Invite link expired: ${inviteLink}`);
+        return { status: 'invite_expired' };
+      }
+      this.logger.error(`Failed to join via invite link ${inviteLink}`, error);
+      throw error;
+    }
+  }
+
+  async leaveChannelByUsername(username: string) {
+    try {
+      const resolved = await this.client.invoke(
+        new Api.contacts.ResolveUsername({
+          username: username.replace('@', ''),
+        }),
+      );
+
+      if (!resolved.chats.length) {
+        throw new Error(`Channel ${username} not found`);
+      }
+
+      const channel = resolved.chats[0];
+
+      const result = await this.client.invoke(
+        new Api.channels.LeaveChannel({
+          channel,
+        }),
+      );
+
+      this.logger.log(`Left channel: ${username}`);
+      return result;
+    } catch (error: any) {
+      if (error.errorMessage === 'USER_NOT_PARTICIPANT') {
+        this.logger.warn(`Not a member of channel ${username}`);
+        return { status: 'not_a_member' };
+      }
+      this.logger.error(`Failed to leave channel ${username}`, error);
+      throw error;
     }
   }
 }
