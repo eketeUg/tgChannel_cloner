@@ -4,7 +4,7 @@ export const menuMarkup = async () => {
     keyboard: [
       [
         {
-          text: 'clone channel 👀',
+          text: 'clone channel 🧬',
           callback_data: JSON.stringify({
             command: '/watchChannel',
             language: 'english',
