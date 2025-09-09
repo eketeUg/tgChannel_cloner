@@ -82,7 +82,9 @@ export class TelegramClientService implements OnModuleInit {
       console.log(msg.id);
       console.log(msg.chatId.toString());
 
-      const regex = /@[\w\d_]{5,32}|https?:\/\/t\.me\/[\w\d_]+/i;
+      // const regex = /@[\w\d_]{5,32}|https?:\/\/t\.me\/[\w\d_]+/i;
+      const regex =
+        /(?:^|\s)@[\w\d_]{5,32}\b|https?:\/\/t\.me\/[\w\d_]+(?:\/\d+)?/i;
 
       if (regex.test(msg.message)) {
         // omit message
