@@ -334,6 +334,7 @@ export class TelegramClientService implements OnModuleInit {
       (history as any).messages || (history as any).originalArgs?.messages;
 
     if (Array.isArray(messages)) {
+      let skipped = 0;
       // Iterate in reverse to maintain order when sending
       for (const msg of messages.slice().reverse()) {
         if (!(msg instanceof Api.Message)) continue;
@@ -345,6 +346,7 @@ export class TelegramClientService implements OnModuleInit {
 
         if (regex.test(msg.message)) {
           console.log('Message contains username or t.me link, skipping...');
+          skipped++;
           continue; // skip just this message
         }
 
@@ -406,7 +408,7 @@ export class TelegramClientService implements OnModuleInit {
       }
       return await this.clonerBot.sendMessage(
         chatId,
-        `Successfully forwarded the last 30 messages from ${targetChannel} to ${cloneChannel}.`,
+        `Successfully forwarded the last ${limit - skipped} messages from ${targetChannel} to ${cloneChannel}.\n\nSkipped ${skipped} messages containing usernames or t.me links.`,
       );
     } else {
       this.logger.warn('No messages found in history response.');
