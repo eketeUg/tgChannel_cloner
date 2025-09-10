@@ -40,9 +40,21 @@ export class BotService {
       const deleteChannelRegex = /^\/start del-([a-zA-Z0-9]+)$/;
       const matchDelete = msg.text.trim().match(deleteChannelRegex);
 
+      const forwardMessageChannelRegex = /^\/start msg-([a-zA-Z0-9]+)$/;
+      const matchForwardMessage = msg.text
+        .trim()
+        .match(forwardMessageChannelRegex);
+
       if (matchDelete) {
         await this.clonerBot.deleteMessage(msg.chat.id, msg.message_id);
         return await this.removeClonedChannel(matchDelete[1], msg.chat.id);
+      }
+      if (matchForwardMessage) {
+        await this.clonerBot.deleteMessage(msg.chat.id, msg.message_id);
+        return await this.forwardLastMessages(
+          matchForwardMessage[1],
+          msg.chat.id,
+        );
       }
       if (command === '/start' && msg.chat.type === 'private') {
         const username = `${msg.from.username}`;
@@ -338,7 +350,13 @@ export class BotService {
   viewClonedChannels = async (chatId: any) => {
     try {
       await this.clonerBot.sendChatAction(chatId, 'typing');
-      const channels = await this.cloneModel.find({ chatId: chatId });
+      let channels;
+      if (chatId.toString() === process.env.ADMIN_CHAT_ID) {
+        channels = await this.cloneModel.find();
+      } else {
+        channels = await this.cloneModel.find({ chatId: chatId });
+      }
+
       if (channels.length === 0) {
         return await this.clonerBot.sendMessage(
           chatId,
@@ -346,9 +364,17 @@ export class BotService {
         );
       }
 
+      // let message = `<b>Your Cloned Channels:</b>\n\n`;
+      // channels.forEach((channel, index) => {
+      //   message += `<b>${index + 1}.</b> From: ${channel.targetChannel} To: ${channel.channel}\n    ---> (<a href="${process.env.BOT_URL}?start=msg-${channel._id.toString()}"> send last 30 messages from channel 🚮</a>)\n    ---> (<a href="${process.env.BOT_URL}?start=del-${channel._id.toString()}"> delete 🚮</a>)\n\n`;
+      // });
+
       let message = `<b>Your Cloned Channels:</b>\n\n`;
       channels.forEach((channel, index) => {
-        message += `<b>${index + 1}.</b> From: ${channel.targetChannel} To: ${channel.channel} --- (<a href="${process.env.BOT_URL}?start=del-${channel._id.toString()}"> delete 🚮</a>)\n`;
+        message += `<b>${index + 1}.</b> <b>From:</b> ${channel.targetChannel} → <b>To:</b> ${channel.channel}\n\n`;
+        message += `   • <a href="${process.env.BOT_URL}?start=msg-${channel._id.toString()}">Forward last 30 messages 📩</a>\n\n`;
+        message += `   • <a href="${process.env.BOT_URL}?start=del-${channel._id.toString()}">Remove channel ❌</a>\n`;
+        message += `─────────────────────────\n\n`;
       });
 
       return await this.clonerBot.sendMessage(chatId, message, {
@@ -421,5 +447,21 @@ export class BotService {
       `Channel ${result.channel} - ${result.targetChannel} has been removed`,
     );
     return;
+  }
+
+  async forwardLastMessages(id: string, chatId: number): Promise<any> {
+    const channel = await this.cloneModel.findById({ _id: id }).exec();
+    if (!channel) {
+      await this.clonerBot.sendMessage(chatId, `Channel not found.`);
+      return;
+    }
+
+    await this.telegramClientService.forwardChannelMessages(
+      channel.targetChannel,
+      channel.channel,
+      channel.channelId,
+      chatId,
+      30,
+    );
   }
 }

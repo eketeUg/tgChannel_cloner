@@ -82,6 +82,11 @@ export class TelegramClientService implements OnModuleInit {
       console.log(msg.id);
       console.log(msg.chatId.toString());
 
+      if (msg.isChannel === false) {
+        console.log('Not a channel message, skipping...');
+        return;
+      }
+
       // const regex = /@[\w\d_]{5,32}|https?:\/\/t\.me\/[\w\d_]+/i;
       const regex =
         /(?:^|\s)@[\w\d_]{5,32}\b|https?:\/\/t\.me\/[\w\d_]+(?:\/\d+)?/i;
@@ -299,5 +304,114 @@ export class TelegramClientService implements OnModuleInit {
       this.logger.error(`Failed to leave channel ${username}`, error);
       throw error;
     }
+  }
+
+  async forwardChannelMessages(
+    targetChannel: string,
+    cloneChannel: string,
+    cloneChannelId: string,
+    chatId: number,
+    limit: number = 30,
+  ) {
+    // 1. Resolve channel username to entity
+    const resolved = await this.client.invoke(
+      new Api.contacts.ResolveUsername({
+        username: targetChannel.replace('@', ''),
+      }),
+    );
+    const channel = resolved.chats[0];
+
+    // 2. Fetch messages
+    const history = await this.client.invoke(
+      new Api.messages.GetHistory({
+        peer: channel,
+        limit, // number of messages to fetch
+      }),
+    );
+
+    // console.log(history);
+    const messages =
+      (history as any).messages || (history as any).originalArgs?.messages;
+
+    if (Array.isArray(messages)) {
+      // Iterate in reverse to maintain order when sending
+      for (const msg of messages.slice().reverse()) {
+        if (!(msg instanceof Api.Message)) continue;
+
+        // console.log(`[${msg.id}] ${msg.message}`);
+
+        const regex =
+          /(?:^|\s)@[\w\d_]{5,32}\b|https?:\/\/t\.me\/[\w\d_]+(?:\/\d+)?/i;
+
+        if (regex.test(msg.message)) {
+          console.log('Message contains username or t.me link, skipping...');
+          continue; // skip just this message
+        }
+
+        // filter channel messages, avoid cloning into same channel
+        if (!msg.isChannel || msg.chatId?.toString() === cloneChannelId) {
+          continue;
+        }
+
+        if (msg.media) {
+          const buffer = await this.client.downloadMedia(msg.media);
+
+          if (buffer) {
+            switch (msg.media.className) {
+              case 'MessageMediaPhoto':
+                await this.clonerBot.sendPhoto(
+                  cloneChannelId,
+                  Buffer.from(buffer),
+                  {
+                    caption: msg.message,
+                    parse_mode: 'HTML',
+                  },
+                );
+                break;
+
+              case 'MessageMediaDocument':
+                if (msg.media.video) {
+                  await this.clonerBot.sendVideo(
+                    cloneChannelId,
+                    Buffer.from(buffer),
+                    {
+                      caption: msg.message,
+                      parse_mode: 'HTML',
+                    },
+                  );
+                } else if (!msg.media.voice) {
+                  await this.clonerBot.sendAnimation(
+                    cloneChannelId,
+                    Buffer.from(buffer),
+                    {
+                      caption: msg.message,
+                      parse_mode: 'HTML',
+                    },
+                  );
+                }
+                break;
+            }
+          } else {
+            // fallback if buffer failed
+            await this.clonerBot.sendMessage(cloneChannelId, msg.message, {
+              parse_mode: 'HTML',
+            });
+          }
+        } else {
+          // plain text
+          await this.clonerBot.sendMessage(cloneChannelId, msg.message, {
+            parse_mode: 'HTML',
+          });
+        }
+      }
+      return await this.clonerBot.sendMessage(
+        chatId,
+        `Successfully forwarded the last 30 messages from ${targetChannel} to ${cloneChannel}.`,
+      );
+    } else {
+      this.logger.warn('No messages found in history response.');
+    }
+
+    // return history.messages;
   }
 }
