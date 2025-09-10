@@ -337,6 +337,7 @@ export class TelegramClientService implements OnModuleInit {
       let skipped = 0;
       // Iterate in reverse to maintain order when sending
       for (const msg of messages.slice().reverse()) {
+        await this.clonerBot.sendChatAction(chatId, 'typing');
         if (!(msg instanceof Api.Message)) continue;
 
         // console.log(`[${msg.id}] ${msg.message}`);
