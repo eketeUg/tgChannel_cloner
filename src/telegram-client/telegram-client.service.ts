@@ -89,7 +89,7 @@ export class TelegramClientService implements OnModuleInit {
 
       // const regex = /@[\w\d_]{5,32}|https?:\/\/t\.me\/[\w\d_]+/i;
       const regex =
-        /(?:^|\s)@[\w\d_]{5,32}\b|https?:\/\/t\.me\/[\w\d_]+(?:\/\d+)?/i;
+        /(?:^|\s)@[\w\d_]{2,32}\b|https?:\/\/t\.me\/[\w\d_]+(?:\/\d+)?/i;
 
       if (regex.test(msg.message)) {
         // omit message
@@ -117,6 +117,12 @@ export class TelegramClientService implements OnModuleInit {
                 `New channel post: ChatID=${msg.chatId}, MessageID=${msg.id}`,
               );
               if (msg.media) {
+                if (msg.media?.className === 'MessageMediaWebPage') {
+                  return await this.clonerBot.sendMessage(
+                    channelId,
+                    msg.message,
+                  );
+                }
                 // download as Buffer
                 const buffer = await this.client.downloadMedia(msg.media);
                 //   console.log('bufferrrr :', buffer);
@@ -343,7 +349,7 @@ export class TelegramClientService implements OnModuleInit {
         // console.log(`[${msg.id}] ${msg.message}`);
 
         const regex =
-          /(?:^|\s)@[\w\d_]{5,32}\b|https?:\/\/t\.me\/[\w\d_]+(?:\/\d+)?/i;
+          /(?:^|\s)@[\w\d_]{2,32}\b|https?:\/\/t\.me\/[\w\d_]+(?:\/\d+)?/i;
 
         if (regex.test(msg.message)) {
           console.log('Message contains username or t.me link, skipping...');
@@ -357,6 +363,12 @@ export class TelegramClientService implements OnModuleInit {
         }
 
         if (msg.media) {
+          if (msg.media?.className === 'MessageMediaWebPage') {
+            return await this.clonerBot.sendMessage(
+              cloneChannelId,
+              msg.message,
+            );
+          }
           const buffer = await this.client.downloadMedia(msg.media);
 
           if (buffer) {
