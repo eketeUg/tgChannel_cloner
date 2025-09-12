@@ -319,8 +319,25 @@ export class TelegramClientService implements OnModuleInit {
     chatId: number,
     limit: number = 30,
   ) {
-    // 1. Resolve channel username to entity
     console.log('forwarding ....');
+
+    const delay = (ms: number) => new Promise((res) => setTimeout(res, ms));
+
+    const safeSend = async (fn: () => Promise<any>) => {
+      try {
+        return await fn();
+      } catch (err: any) {
+        if (err.response?.error_code === 429) {
+          const retryAfter = err.response.parameters?.retry_after ?? 5;
+          console.log(`⏳ Rate limited. Waiting ${retryAfter}s...`);
+          await delay(retryAfter * 1000);
+          return safeSend(fn);
+        }
+        console.error('Send failed:', err.message);
+      }
+    };
+
+    // 1. Resolve channel username
     const resolved = await this.client.invoke(
       new Api.contacts.ResolveUsername({
         username: targetChannel.replace('@', ''),
@@ -332,100 +349,409 @@ export class TelegramClientService implements OnModuleInit {
     const history = await this.client.invoke(
       new Api.messages.GetHistory({
         peer: channel,
-        limit, // number of messages to fetch
+        limit,
       }),
     );
 
-    // console.log((history as any).messages);
     const messages =
       (history as any).messages || (history as any).originalArgs?.messages;
 
-    if (Array.isArray(messages)) {
-      let skipped = 0;
-      console.log('Messages found:', messages.length);
-      // Iterate in reverse to maintain order when sending
-      for (const msg of messages.slice().reverse()) {
-        await this.clonerBot.sendChatAction(chatId, 'typing');
-        if (!(msg instanceof Api.Message)) continue;
+    if (!Array.isArray(messages) || messages.length === 0) {
+      this.logger.warn('No messages found in history response.');
+      return;
+    }
 
-        // console.log(`[${msg.id}] ${msg.message}`);
+    console.log('Messages found:', messages.length);
+    // console.log('first message :', messages[messages.length - 1]);
+    // console.log('last message :', messages[0]);
 
-        const regex =
-          /(?:^|\s)@[\w\d_]{2,32}\b|https?:\/\/t\.me\/[\w\d_]+(?:\/\d+)?/i;
+    let skipped = 0;
+    let sentCount = 0;
 
-        if (regex.test(msg.message)) {
-          console.log('Message contains username or t.me link, skipping...');
-          skipped++;
-          continue; // skip just this message
-        }
+    for (const msg of messages.slice().reverse()) {
+      await safeSend(() => this.clonerBot.sendChatAction(chatId, 'typing'));
 
-        // filter channel messages, avoid cloning into same channel
-        if (!msg.isChannel || msg.chatId?.toString() === cloneChannelId) {
-          continue;
-        }
+      if (!(msg instanceof Api.Message)) continue;
 
-        if (msg.media) {
-          if (msg.media?.className === 'MessageMediaWebPage') {
-            await this.clonerBot.sendMessage(cloneChannelId, msg.message);
-          }
+      const regex =
+        /(?:^|\s)@[\w\d_]{2,32}\b|https?:\/\/t\.me\/[\w\d_]+(?:\/\d+)?/i;
+
+      if (regex.test(msg.message)) {
+        console.log('⏭ Skipping message with username or t.me link...');
+        skipped++;
+        continue;
+      }
+
+      if (!msg.isChannel || msg.chatId?.toString() === cloneChannelId) {
+        continue;
+      }
+
+      // --- send message ---
+      if (msg.media) {
+        if (msg.media?.className === 'MessageMediaWebPage') {
+          await safeSend(() =>
+            this.clonerBot.sendMessage(cloneChannelId, msg.message),
+          );
+          sentCount++;
+        } else {
           const buffer = await this.client.downloadMedia(msg.media);
-
           if (buffer) {
             switch (msg.media.className) {
               case 'MessageMediaPhoto':
-                await this.clonerBot.sendPhoto(
-                  cloneChannelId,
-                  Buffer.from(buffer),
-                  {
-                    caption: msg.message,
-                    parse_mode: 'HTML',
-                  },
+                await safeSend(() =>
+                  this.clonerBot.sendPhoto(
+                    cloneChannelId,
+                    Buffer.from(buffer),
+                    {
+                      caption: msg.message,
+                      parse_mode: 'HTML',
+                    },
+                  ),
                 );
+                sentCount++;
                 break;
 
               case 'MessageMediaDocument':
                 if (msg.media.video) {
-                  await this.clonerBot.sendVideo(
-                    cloneChannelId,
-                    Buffer.from(buffer),
-                    {
-                      caption: msg.message,
-                      parse_mode: 'HTML',
-                    },
+                  await safeSend(() =>
+                    this.clonerBot.sendVideo(
+                      cloneChannelId,
+                      Buffer.from(buffer),
+                      {
+                        caption: msg.message,
+                        parse_mode: 'HTML',
+                      },
+                    ),
                   );
+                  sentCount++;
                 } else if (!msg.media.voice) {
-                  await this.clonerBot.sendAnimation(
-                    cloneChannelId,
-                    Buffer.from(buffer),
-                    {
-                      caption: msg.message,
-                      parse_mode: 'HTML',
-                    },
+                  await safeSend(() =>
+                    this.clonerBot.sendAnimation(
+                      cloneChannelId,
+                      Buffer.from(buffer),
+                      {
+                        caption: msg.message,
+                        parse_mode: 'HTML',
+                      },
+                    ),
                   );
+                  sentCount++;
                 }
                 break;
             }
           } else {
-            // fallback if buffer failed
-            await this.clonerBot.sendMessage(cloneChannelId, msg.message, {
-              parse_mode: 'HTML',
-            });
+            await safeSend(() =>
+              this.clonerBot.sendMessage(cloneChannelId, msg.message, {
+                parse_mode: 'HTML',
+              }),
+            );
+            sentCount++;
           }
-        } else {
-          // plain text
-          await this.clonerBot.sendMessage(cloneChannelId, msg.message, {
-            parse_mode: 'HTML',
-          });
         }
+      } else {
+        await safeSend(() =>
+          this.clonerBot.sendMessage(cloneChannelId, msg.message, {
+            parse_mode: 'HTML',
+          }),
+        );
+        sentCount++;
       }
-      return await this.clonerBot.sendMessage(
-        chatId,
-        `Successfully forwarded the last ${limit - skipped} messages from ${targetChannel} to ${cloneChannel}.\n\nSkipped ${skipped} messages containing usernames or t.me links.`,
-      );
-    } else {
-      this.logger.warn('No messages found in history response.');
+
+      // throttle: after 20 messages, pause 70s
+      if (sentCount % 20 === 0) {
+        console.log('⏸️ Sent 20 messages. Pausing for 70s...');
+        await this.clonerBot.sendMessage(
+          chatId,
+          `⏸️ Sent ${sentCount}  messages. Pausing for 70 seconds to avoid rate limits...`,
+        );
+        await delay(70000);
+        console.log('▶️ Resuming message forwarding...');
+        await this.clonerBot.sendMessage(
+          chatId,
+          '▶️ Resuming message forwarding...',
+        );
+      } else {
+        // small delay between messages to stay safe
+        await delay(1000);
+      }
     }
 
-    // return history.messages;
+    return await safeSend(() =>
+      this.clonerBot.sendMessage(
+        chatId,
+        `✅ Forwarded ${sentCount} messages from ${targetChannel} to ${cloneChannel}.\n\n⏭ Skipped ${skipped} messages containing usernames or t.me links.`,
+      ),
+    );
   }
+
+  // async forwardChannelMessages(
+  //   targetChannel: string,
+  //   cloneChannel: string,
+  //   cloneChannelId: string,
+  //   chatId: number,
+  //   limit: number = 30,
+  // ) {
+  //   console.log('forwarding ....');
+
+  //   // helper: safe sender with retry_after handling
+  //   const delay = (ms: number) => new Promise((res) => setTimeout(res, ms));
+
+  //   const safeSend = async (fn: () => Promise<any>) => {
+  //     try {
+  //       return await fn();
+  //     } catch (err: any) {
+  //       if (err.response?.error_code === 429) {
+  //         const retryAfter = err.response.parameters?.retry_after ?? 5;
+  //         console.log(`⏳ Rate limited. Waiting ${retryAfter}s...`);
+  //         await delay(retryAfter * 1000);
+  //         return safeSend(fn); // retry after waiting
+  //       }
+  //       console.error('Send failed:', err.message);
+  //     }
+  //   };
+
+  //   // 1. Resolve channel username
+  //   const resolved = await this.client.invoke(
+  //     new Api.contacts.ResolveUsername({
+  //       username: targetChannel.replace('@', ''),
+  //     }),
+  //   );
+  //   const channel = resolved.chats[0];
+
+  //   // 2. Fetch messages
+  //   const history = await this.client.invoke(
+  //     new Api.messages.GetHistory({
+  //       peer: channel,
+  //       limit,
+  //     }),
+  //   );
+
+  //   const messages =
+  //     (history as any).messages || (history as any).originalArgs?.messages;
+
+  //   if (!Array.isArray(messages) || messages.length === 0) {
+  //     this.logger.warn('No messages found in history response.');
+  //     return;
+  //   }
+
+  //   console.log('Messages found:', messages.length);
+
+  //   let skipped = 0;
+
+  //   // Iterate in reverse to preserve order
+  //   for (const msg of messages.slice().reverse()) {
+  //     await safeSend(() => this.clonerBot.sendChatAction(chatId, 'typing'));
+
+  //     if (!(msg instanceof Api.Message)) continue;
+
+  //     const regex =
+  //       /(?:^|\s)@[\w\d_]{2,32}\b|https?:\/\/t\.me\/[\w\d_]+(?:\/\d+)?/i;
+
+  //     if (regex.test(msg.message)) {
+  //       console.log('⏭ Skipping message with username or t.me link...');
+  //       skipped++;
+  //       continue;
+  //     }
+
+  //     if (!msg.isChannel || msg.chatId?.toString() === cloneChannelId) {
+  //       continue;
+  //     }
+
+  //     // handle media
+  //     if (msg.media) {
+  //       if (msg.media?.className === 'MessageMediaWebPage') {
+  //         await safeSend(() =>
+  //           this.clonerBot.sendMessage(cloneChannelId, msg.message),
+  //         );
+  //       } else {
+  //         const buffer = await this.client.downloadMedia(msg.media);
+  //         if (buffer) {
+  //           switch (msg.media.className) {
+  //             case 'MessageMediaPhoto':
+  //               await safeSend(() =>
+  //                 this.clonerBot.sendPhoto(
+  //                   cloneChannelId,
+  //                   Buffer.from(buffer),
+  //                   {
+  //                     caption: msg.message,
+  //                     parse_mode: 'HTML',
+  //                   },
+  //                 ),
+  //               );
+  //               break;
+
+  //             case 'MessageMediaDocument':
+  //               if (msg.media.video) {
+  //                 await safeSend(() =>
+  //                   this.clonerBot.sendVideo(
+  //                     cloneChannelId,
+  //                     Buffer.from(buffer),
+  //                     {
+  //                       caption: msg.message,
+  //                       parse_mode: 'HTML',
+  //                     },
+  //                   ),
+  //                 );
+  //               } else if (!msg.media.voice) {
+  //                 await safeSend(() =>
+  //                   this.clonerBot.sendAnimation(
+  //                     cloneChannelId,
+  //                     Buffer.from(buffer),
+  //                     {
+  //                       caption: msg.message,
+  //                       parse_mode: 'HTML',
+  //                     },
+  //                   ),
+  //                 );
+  //               }
+  //               break;
+  //           }
+  //         } else {
+  //           // fallback if no buffer
+  //           await safeSend(() =>
+  //             this.clonerBot.sendMessage(cloneChannelId, msg.message, {
+  //               parse_mode: 'HTML',
+  //             }),
+  //           );
+  //         }
+  //       }
+  //     } else {
+  //       // plain text
+  //       await safeSend(() =>
+  //         this.clonerBot.sendMessage(cloneChannelId, msg.message, {
+  //           parse_mode: 'HTML',
+  //         }),
+  //       );
+  //     }
+
+  //     // throttle: ~1 msg/sec per chat
+  //     await delay(1100);
+  //   }
+
+  //   return await safeSend(() =>
+  //     this.clonerBot.sendMessage(
+  //       chatId,
+  //       `✅ Forwarded ${limit - skipped} messages from ${targetChannel} to ${cloneChannel}.\n\n⏭ Skipped ${skipped} messages containing usernames or t.me links.`,
+  //     ),
+  //   );
+  // }
+
+  // async forwardChannelMessages(
+  //   targetChannel: string,
+  //   cloneChannel: string,
+  //   cloneChannelId: string,
+  //   chatId: number,
+  //   limit: number = 30,
+  // ) {
+  //   // 1. Resolve channel username to entity
+  //   console.log('forwarding ....');
+  //   const resolved = await this.client.invoke(
+  //     new Api.contacts.ResolveUsername({
+  //       username: targetChannel.replace('@', ''),
+  //     }),
+  //   );
+  //   const channel = resolved.chats[0];
+
+  //   // 2. Fetch messages
+  //   const history = await this.client.invoke(
+  //     new Api.messages.GetHistory({
+  //       peer: channel,
+  //       limit, // number of messages to fetch
+  //     }),
+  //   );
+
+  //   // console.log((history as any).messages);
+  //   const messages =
+  //     (history as any).messages || (history as any).originalArgs?.messages;
+
+  //   if (Array.isArray(messages)) {
+  //     let skipped = 0;
+  //     console.log('Messages found:', messages.length);
+  //     // Iterate in reverse to maintain order when sending
+  //     for (const msg of messages.slice().reverse()) {
+  //       await this.clonerBot.sendChatAction(chatId, 'typing');
+  //       if (!(msg instanceof Api.Message)) continue;
+
+  //       // console.log(`[${msg.id}] ${msg.message}`);
+
+  //       const regex =
+  //         /(?:^|\s)@[\w\d_]{2,32}\b|https?:\/\/t\.me\/[\w\d_]+(?:\/\d+)?/i;
+
+  //       if (regex.test(msg.message)) {
+  //         console.log('Message contains username or t.me link, skipping...');
+  //         skipped++;
+  //         continue; // skip just this message
+  //       }
+
+  //       // filter channel messages, avoid cloning into same channel
+  //       if (!msg.isChannel || msg.chatId?.toString() === cloneChannelId) {
+  //         continue;
+  //       }
+
+  //       if (msg.media) {
+  //         if (msg.media?.className === 'MessageMediaWebPage') {
+  //           await this.clonerBot.sendMessage(cloneChannelId, msg.message);
+  //         }
+  //         const buffer = await this.client.downloadMedia(msg.media);
+
+  //         if (buffer) {
+  //           switch (msg.media.className) {
+  //             case 'MessageMediaPhoto':
+  //               await this.clonerBot.sendPhoto(
+  //                 cloneChannelId,
+  //                 Buffer.from(buffer),
+  //                 {
+  //                   caption: msg.message,
+  //                   parse_mode: 'HTML',
+  //                 },
+  //               );
+  //               break;
+
+  //             case 'MessageMediaDocument':
+  //               if (msg.media.video) {
+  //                 await this.clonerBot.sendVideo(
+  //                   cloneChannelId,
+  //                   Buffer.from(buffer),
+  //                   {
+  //                     caption: msg.message,
+  //                     parse_mode: 'HTML',
+  //                   },
+  //                 );
+  //               } else if (!msg.media.voice) {
+  //                 await this.clonerBot.sendAnimation(
+  //                   cloneChannelId,
+  //                   Buffer.from(buffer),
+  //                   {
+  //                     caption: msg.message,
+  //                     parse_mode: 'HTML',
+  //                   },
+  //                 );
+  //               }
+  //               break;
+  //           }
+  //         } else {
+  //           // fallback if buffer failed
+  //           await this.clonerBot.sendMessage(cloneChannelId, msg.message, {
+  //             parse_mode: 'HTML',
+  //           });
+  //         }
+  //       } else {
+  //         // plain text
+  //         await this.clonerBot.sendMessage(cloneChannelId, msg.message, {
+  //           parse_mode: 'HTML',
+  //         });
+  //       }
+  //     }
+  //     return await this.clonerBot.sendMessage(
+  //       chatId,
+  //       `Successfully forwarded the last ${limit - skipped} messages from ${targetChannel} to ${cloneChannel}.\n\nSkipped ${skipped} messages containing usernames or t.me links.`,
+  //     );
+  //   } else {
+  //     this.logger.warn('No messages found in history response.');
+  //   }
+
+  //   // return history.messages;
+  // }
 }
+
+// work on 'MessageService',later
