@@ -320,6 +320,7 @@ export class TelegramClientService implements OnModuleInit {
     limit: number = 30,
   ) {
     // 1. Resolve channel username to entity
+    console.log('forwarding ....');
     const resolved = await this.client.invoke(
       new Api.contacts.ResolveUsername({
         username: targetChannel.replace('@', ''),
@@ -335,12 +336,13 @@ export class TelegramClientService implements OnModuleInit {
       }),
     );
 
-    // console.log(history);
+    // console.log((history as any).messages);
     const messages =
       (history as any).messages || (history as any).originalArgs?.messages;
 
     if (Array.isArray(messages)) {
       let skipped = 0;
+      console.log('Messages found:', messages.length);
       // Iterate in reverse to maintain order when sending
       for (const msg of messages.slice().reverse()) {
         await this.clonerBot.sendChatAction(chatId, 'typing');
@@ -364,10 +366,7 @@ export class TelegramClientService implements OnModuleInit {
 
         if (msg.media) {
           if (msg.media?.className === 'MessageMediaWebPage') {
-            return await this.clonerBot.sendMessage(
-              cloneChannelId,
-              msg.message,
-            );
+            await this.clonerBot.sendMessage(cloneChannelId, msg.message);
           }
           const buffer = await this.client.downloadMedia(msg.media);
 

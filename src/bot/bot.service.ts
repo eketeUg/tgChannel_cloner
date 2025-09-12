@@ -461,7 +461,7 @@ export class BotService {
       channel.channel,
       channel.channelId,
       chatId,
-      30,
+      5,
     );
   }
 }
